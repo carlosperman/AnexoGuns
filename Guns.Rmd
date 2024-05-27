@@ -1,0 +1,678 @@
+---
+title: "Script Guns TFG"
+author: "Carlos Pérez Manzano"
+output:
+  html_document:
+    toc: yes
+    df_print: paged
+  word_document:
+    toc: yes
+  pdf_document:
+    fig_caption: yes
+    latex_engine: xelatex
+    number_sections: yes
+    toc: yes
+---
+
+Este script tiene como objetivo la aplicación de la teoría acerca de los datos panel empleando como objeto de estudio la base de datos `Guns` del paquete `AER`. Este dataset contiene información sobre la criminalidad en EEUU en los los distintos estados incluyendo el Distrito de Columbia. Lo comprenden 1173 observaciones y 13 variables que se describen a continuación:
+
+- **state: ** factor indicando el estado.
+- **year:** factor indicando el año.
+- **violent:** tasa de delitos violentos (indicentes por 100.000 personas).
+- **murder:** tasa de asesinatos (incidentes por 100.000 personas).
+- **robbery:** tasa de robo (incidentes por 100.000 personas).
+- **prisioners:** tasa de encarcelamientos del año anterior (por cada 100.000 personas).
+- **afam:** porcentaje de la población con edad entre 10 y 64 años que es afroamericana.
+- **cauc:** porcentaje de la población con edad entre 10 y 64 años que es caucásica.
+- **male:** porcentaje de la población que es hombre, con edad entre 10 y 29 años.
+- **population:** población en millones de personas.
+- **income:** ingreso personal per capita en dólares.
+- **density:** densidad de poblacion por milla cuadrada de superficie terrestre dividida por 1.000.
+-- **law:** variable de tipo factor que indica si el estado tiene una ley de portabilidad de armas vigente (1) o si no la posee (0).
+
+Se va a hacer uso principalmente del paquete **plm**, que incluye funciones y métodos de ajuste relevantes para los tipos de datos panel. Se hará uso además del ya mencionando **AER**, **cramer** (para la realización de un test no paramétrico de igualdad de medias), **lattice** y **ggplot2** (incluyen funciones gráficas avanzadas)
+
+La variable a predecir en el estudio es `violent`.
+
+# Carga de paquetes y dataset
+
+Cargamos los paquetes que vamos a necesitar a lo largo del script
+```{r set up,warning=FALSE, message=FALSE}
+library(AER)
+library(plm)
+library(lattice) 
+library(ggplot2)
+library(cramer) 
+
+```
+
+Cargamos también el conjunto de datos. Vamos a reordenar las variables de manera que la primera y segunda columna sean la variable individual y temporal respectivamente. Esto permite el almacenamiento de los datos en un tipo de objeto `pdata.frame`, siendo este una extensión del clásico `data.frame` aunque incluyendo un doble ídice para cada observación (primero individual y luego temporal)
+
+```{r}
+data("Guns")
+Guns = cbind(Guns$state , Guns[,-12]) 
+colnames(Guns)[1] = "state"
+Guns = pdata.frame(Guns)
+str(Guns) 
+head(Guns)
+```
+
+```{r}
+pdim(Guns)
+```
+La función `pdim`nos da un resumen de la estructura del panel de datos. Contamos con $1173$ observaciones en $51$ individuos y $23$ instantes de tiempo.
+
+# Análisis descriptivo
+
+Pasamos a un análisis descrptivo previo a la preparación y aplicación de los modelos.
+```{r, include = FALSE}
+summary(Guns) #resumen básico de los regresores
+```
+
+```{r}
+GunsCont = Guns[ , -c(1,2,13)]
+(matcor = round(cor(as.matrix(GunsCont)),2))
+det(round(cor(as.matrix(GunsCont[,-1])),2))  
+```
+Observamos una gran presencia de multicolinealidad en las covariables. <br>
+Destacamos una alta correlación lineal de la variable `violent` con `robbery`, `murder` y `prisioners` principalmente. 
+
+Hay en las variables presencia de una gran cantidad de casos atípicos.
+```{r}
+for (i in 1:ncol(GunsCont)){
+  boxplot(GunsCont[,i] , main = colnames(GunsCont)[i])
+}
+```
+
+Vamos a llevar a cabo en lo que resta la transformación logarítmica para reducir la influencia de estos valores extremos. Es razonable la gran presencia de casos atípicos debido a que EE.UU es un país muy extenso y en el que hay mucha diferencia de estilo de vida entre unos estados y otros.
+
+```{r, include = FALSE}
+for (i in 1:ncol(GunsCont)){
+  boxplot(log(GunsCont[,i]) , main = colnames(GunsCont)[i])
+}
+```
+
+
+
+## Visualización de la variable objetivo `violent`
+
+### Comportamiento medio global a lo largo del tiempo
+Veamos como evoluciona en tiempo la variable `violent` en media globalmente, es decir, en todos los estados.
+
+```{r}
+T = pdim(Guns)$nT$T
+time = paste(1977:(1977+(T-1)))
+medviol = rep(NA,T)
+for (i in 0:(T-1)){
+  medviol[i+1] = mean(Guns[Guns$year == (1977 + i), 3])
+}
+medviol = cbind(medviol)
+rownames(medviol) = time
+matplot(time , medviol , type = "l" , col = "red" , lwd = 2 , 
+        xlab = "Año" , ylab = "Crimenes violentos" , main = "Evolucion de la media de la tasa de crimenes violentos" )
+```
+
+
+
+```{r}
+which.max(medviol)
+medviol[which.max(medviol)]
+which.min(medviol)
+medviol[which.min(medviol)]
+```
+
+En principio, podemos observar una clara subida de los casos de crímenes violentos a partir del año 1987, con un maximo ratio de 614.1098 en 1994. A partir de ahí notamos una clara bajada de los casos. En un principio la tasa es mucho menor al resto de años. De hecho, la tasa minima se encuentra en el primer año registrado (1977).
+
+
+## Estados con mayor tasa de criminalidad 
+```{r}
+meanviolstate = cbind(t(sapply(split(Guns$violent, Guns$state) , function(m) mean(m))))
+(ordmeanviolstate = sort( meanviolstate , decreasing = TRUE))
+n = pdim(Guns)$nT$n
+v = rep(1,n)
+for (i in 1:n){
+  j = which(meanviolstate == ordmeanviolstate[i])
+  v[i] = colnames(meanviolstate)[j]
+}
+```
+
+```{r}
+head(cbind(v,ordmeanviolstate))
+```
+El Distrito de Columbia es el que tiene mayor tasa de criminalidad violenta siendo esta más del doble que el resto, sieguiendole Florida y New York
+
+
+### Comportamiento a lo largo del tiempo en los distintos estados
+
+Mostramos a continuación la siguiente gráfica:
+```{r}
+xyplot(log(violent) ~ as.numeric(as.character(year)) | state, data = Guns, 
+       type = "l", xlab = "Tiempo" , ylab = "Tasa de violencia")
+```
+
+Podemos observar que en general `violent` fluctúa bastante en el tiempo.
+
+
+
+## Estudio del factor `law`
+
+Procedemos al estudio de la covariable `law`, la única que es de tipo factor.
+```{r}
+table(Guns$law)
+```
+En 888 observaciones no hay una ley vigente mientras que en 285 sí. Calculemos la media de la variable objetivo distinguiendo las observaciones según el factor `law`.
+
+```{r}
+meanviollaw = cbind(t(sapply(split(Guns$violent, Guns$law) , function(m) mean(m))))
+rownames(meanviollaw) = names(Guns)[3]
+meanviollaw
+```
+Aparentemente, la tasa de crímenes violentos es mayor en los casos en los que no hay vigente una ley de portabilidad de armas.
+<br>
+Mostremos ahora la evolución de la variable `law` a lo largo del tiempo.
+```{r}
+table(Guns$law, Guns$year)
+```
+Observamos un aumento claro a lo largo del tiempo del número de estados con una ley de portabilidad de armas vigente.
+<br>
+Luego podemos reflexionar lo siguiente:
+<br>
+Hemos visto que la media de crímenes violentos del grupo de observaciones donde `law` = 1 es menor que en el caso `law` = 0, luego podriamos pensar que el factor `law` = 1 hace disminuir la tasa de criminalidad, sin embargo si observamos la tabla anterior y el gráfico representado anteriormente sobre la evolución de la media de `violent`, en el periodo de 1987 a 1994 aumentó considerablemente el número de estados con una ley vigente, no obstante, la media de la tasa de criminalidad crece significativamente en ese periodo. Posteriormente sigue en aumento el numero de estados con `law` = 1 mientras que la media de la tasa de criminalidad baja. Nos surge por tanto la pregunta de si realmente la variable `law` es significativa. Vamos a hacer en primer lugar un contraste de igualdad de medias.
+
+```{r}
+sapply(split(Guns$violent , Guns$law) , function(m) shapiro.test(m))
+```
+
+Se rechaza la normalidad univariante en los grupos y en consecuencia también se rechaza la normalidad multivariante. Recurrimos por tanto a un test no paramétrico.
+```{r}
+cramer.test(as.matrix(GunsCont[Guns$law == "yes",]),
+            as.matrix(GunsCont[Guns$law == "no",]),
+            sim="permutation")
+```
+
+Rechazamos la hipótesis nula de igualdad de medias. Teniendo en cuenta la media muestral en los grupos concluimos que la tasa de criminalidad violenta es mayor si `law` = 0 y menor si `law`  = 1. 
+
+```{r}
+lm(log(violent) ~ law, data = Guns)$coefficients[2]
+```
+El coeficiente es negativo, llegamos a que el factor `law` = 1 disminuye la tasa de crímenes violentos.
+
+
+
+# Preparación para los modelos
+
+Debido a que vimos anteriormente que contamos con un alto grado de multicolinealidad en las variables regresoras, debemos decidir qué variables escoger para los modelos. La matriz de correlaciones lineales de las covariables continuas es:
+```{r}
+(matcor = round(cor(as.matrix(GunsCont[,-1])),2))
+```
+Destacamos las siguientes correlaciones lineales entre variables predictoras:
+
+- `cauc` y `afam`: -0.98
+- `murder` y `robbery`: 0.8
+- `robbery` y `density`: 0.78
+- `murder` y `density`: 0.75
+
+Procederemos eliminando del modelo una variable de cada uno de los siguientes pares: (`cauc`, `afam`), (`murder`, `robbery`).
+Con la idea de eliminar las variables con mayores casos atípicos, optamos por suprimir de los modelos las variables `cauc` y `robbery`. Con el propósito de tener una mayor seguridad, podemos hacer uso del *factor de inflación de la varianza* (**FIV**) o más bien conocido por sus siglas en inglés (**VIF**). Consideraremos variables que generan una alta multicolinealidad aquellas con un **VIF** mayor que $5$.
+<br>
+Cálculo del (**VIF**) con todas las covariables:
+```{r}
+(vifvalues <- car::vif(lm(log(violent) ~ log(murder) + log(robbery) + log(prisoners)
+                           + log(afam) + log(cauc) + log(male) + log(population) + log(income)
+                           + density, data = Guns)))
+```
+
+Eliminando la variable `cauc`:
+```{r}
+(vifvalues <- car::vif(lm(log(violent) ~ log(murder) + log(robbery) + log(prisoners)
+                           + log(afam) + log(male) + log(population) + log(income)
+                           + log(density), data = Guns)))
+```
+Eliminando además la variable `robbery`:
+```{r}
+vifvalues <- car::vif(lm(log(violent) ~ log(murder) + log(prisoners)
+                           + log(afam) + log(male) + log(population) + log(income)
+                           + log(density), data = Guns))
+dotchart(vifvalues , main = c("VIF de las covariables continuas") , 
+         pch = 15 , col = "blue" , xlab = "VIF")
+grid()
+```
+
+Todos los **VIF** son menores o iguales que $5$. 
+```{r}
+det(matcor)
+det(round(cor(as.matrix(GunsCont[,-c(1,3,6)])),2)) 
+```
+De esta manera hemos reducido la multicolinealidad considerablemente. Definimos la formula que describe la variable predictora y las covariables de los modelos que se plantean a continuación.
+```{r, tidy = FALSE}
+form <- log(violent) ~ log(murder) +  log(prisoners) + log(afam) + 
+  log(male) +log(population) + log(income) + log(density) + law
+```
+
+# Modelos de componente de error unidireccional
+
+### Modelo de efectos fijos
+
+```{r}
+Guns.within1 <- plm(form , data = Guns , effect = "individual" , model = "within")
+summary(Guns.within1)
+```
+
+Las estimaciones de las pendientes del modelo son las siguientes:
+```{r}
+coef(Guns.within1)
+```
+
+
+Para los coeficientes correspondientes a los efectos individuales tenemos las siguientes opciones:
+
+- `level` (valor por defecto): devuelve los interceptos individuales, es decir $\hat{\alpha} + \hat{\eta}_n$ Esta opción es la más usual.
+- `dfirst`: toma las desviaciones de los efectos individuales respecto del primer individuo, el cual se toma como estimación del intercepto $\hat{\alpha}$.
+- `dmean`: devuelve las desviaciones de los efectos individuales respecto de las medias. En este caso $\hat{\alpha}$ es la media de los interceptos individuales.
+
+
+```{r}
+head(fixef(Guns.within1 , type = "level"))  
+head(fixef(Guns.within1 , type = "dfirst"))
+head(fixef(Guns.within1 , type = "dmean"))
+```
+
+Veamos en este ejemplo la equivalencia del estimador **LSDV** y el estimador intragrupos. Como el comportamiento predeterminado de `lm` con factores es eliminar el primer nivel del factor, coincide con el modelo de efectos fijos con el tipo "`dfirst`".
+```{r}
+coeflsdv <- head(coef(lm(log(violent) ~ log(murder) +  log(prisoners) + log(afam) + log(male) + log(population) + log(income) + log(density) +  + law + factor(state) , 
+        data = Guns))[-1])
+coefwithin1 <- head(coef(Guns.within1 , type = "dfirst"))
+cbind(coeflsdv , coefwithin1)
+```
+
+### Modelos de efectos aleatorios
+
+Para el modelo de efectos aleatorios, los resultados van a depender del estimador que escojamos de $\varepsilon$ para las estimaciones de las componentes de la varianza, aunque como veremos, los resultados son muy similares. Presentamos aquellas dadas por Wallace-Hussain (1969), Amemiya (1971), Swamy-Arora (1972) y Nerlove (1971).
+
+```{r}
+Guns.rwalhus1 <- plm(form , data = Guns , effect = "individual" , 
+                       model = "random", random.method = "walhus")
+Guns.ramemiya1 <- update(Guns.rwalhus1 , random.method = "amemiya")
+Guns.rswar1 <- update(Guns.rwalhus1 , random.method = "swar")
+Guns.rnerlove1 <- update(Guns.rwalhus1 , random.method = "nerlove")
+Guns.rmodels1 <- list( walhus = Guns.rwalhus1 ,  amemiya = Guns.ramemiya1, 
+                      swar = Guns.rswar1 , nerlove = Guns.rnerlove1)
+
+```
+Los coeficientes para los distintos modelos son:
+```{r}
+sapply(Guns.rmodels1 , function(m) coef(summary(m))[ , "Estimate"])
+```
+Las estimaciones de las pendientes del modelo son muy similares.<br>
+
+
+Analicemos la información proporcionada por la función `ercomp`:
+```{r}
+lapply(Guns.rmodels1, function(m) ercomp(m))
+```
+
+Observamos que la varianza de los efectos individuales en los métodos de Amemiya y Nerlove son muy superiores al resto, explicando prácticamente la totalidad de la varianza, mientras que por el método de Walhus y Swarmy la variabilidad individual explican un $61.5\%$  y un $72\%$ de la totalidad respectivamente. En el siguiente apartado justificaremos por qué se da esta situación.
+
+
+### Comparación de los modelos de efectos aleatorios y el modelo de efectos fijos
+
+Veamos en primer lugar el parámetro $\theta$ para los distintos modelos de efectos aleatorios.
+```{r}
+sapply(Guns.rmodels1 , function(m) ercomp(m)$theta)
+```
+
+Observamos que los valores de $\theta$ son muy cercanos a $1$, en especial con los métodos de Amemiya y  Nerlove. Esto indica que el estimador de efectos aleatorios es muy similar al intragrupos. Comparemos los coeficientes:
+```{r}
+modelscoef1<-cbind(as.matrix(sapply(Guns.rmodels1, function(m) coef(m)))[-1,], within = coef(Guns.within1))
+modelscoef1
+```
+Los coeficientes correspondientes a Amemiya y Nerlove en especial se asemejan mucho al estimador intragrupos. A continuación se muestra la diferencia de los coeficientes de los estimadores de efectos aleatorios y los correspondientes al modelo de efectos fijos.
+```{r}
+difrwithin = matrix(NA , nrow = nrow(modelscoef1) , ncol = ncol(modelscoef1) -1)
+for(i in 1:ncol(difrwithin)){
+  difrwithin[,i] = abs(modelscoef1[,i] - modelscoef1[,ncol(modelscoef1)])
+}
+rownames(difrwithin) = rownames(modelscoef1)
+colnames(difrwithin) = colnames(modelscoef1)[-length(colnames(modelscoef1))]
+difrwithin
+```
+Las diferencias de los coeficientes entre los distintos modelos aleatorios y el modelo de efectos fijos son muy pocas, siendo mínima en el caso de Amemiya y Nerlove, excepto para las variables `population` y `density`. ¿A qué se puede deber la variación de los coeficientes de estas variables? Observamos las graficas siguientes:
+```{r}
+print(xyplot(log(Guns[,10]) ~ as.numeric(as.character(year)) | state, 
+             data = Guns, type = "l" , xlab = "Tiempo" , ylab = "population"))
+print(xyplot(log(Guns[,12]) ~ as.numeric(as.character(year)) | state, 
+             data = Guns, type = "l" , xlab = "Tiempo" , ylab = "density"))
+```
+
+Vemos que en general las variables son prácticamente constantes en el tiempo para los distintos estados y recordemos que este tipo de variables son eliminadas por la transformacion intragrupos. La estimacion por un modelo de fectos fijos que incluye esas variables no es buena y  se deberian eliminar del modelo. Por tanto, consideramos en adelante el modelo de efectos fijos como:
+```{r}
+Guns.within1 <- plm(log(violent) ~ log(murder) +  log(prisoners) + log(afam) + 
+                      log(male) + log(income) + law, data = Guns , 
+                    effect = "individual" , model = "within")
+```
+
+
+Esta es también la razón de la sobreestimación de la varianza de los efectos individuales en los modelos de efectos aleatorios por los métodos de Amemiya y Nerlove, ya que emplean la estimación del error $\hat{\varepsilon}_w$. Consideramos en adelante:
+```{r}
+Guns.ramemiya1 <- plm(log(violent) ~ log(murder) +  log(prisoners) + log(afam) + 
+                      log(male) + log(income) + law, data = Guns , 
+                    effect = "individual" , model = "random" , 
+                    random.method = "amemiya")
+Guns.rnerlove1 <-  plm(log(violent) ~ log(murder) +  log(prisoners) + log(afam) + 
+                      log(male) + log(income) + law, data = Guns , 
+                    effect = "individual" , model = "random" , 
+                    random.method = "nerlove")
+```
+
+
+```{r}
+ercomp(Guns.ramemiya1)
+ercomp(Guns.rnerlove1)
+```
+
+
+De esta manera ya no está sobreestimada la varianza de los efectos individuales. 
+
+
+Comparamos las desviaciones típicas de los estimadores de las pendientes. Como los resultados son muy similares entre los distintos métodos de efectos aleatorios, seleccionamos unicamente el dado por Swamy-Arora(1972).
+
+
+```{r}
+difstd <-rbind(coef(summary(Guns.within1))[ , "Std. Error"], 
+               coef(summary(Guns.rswar1))[ , "Std. Error"][-c(1, 6 , 8)])
+
+
+rownames(difstd) = c("within" , "random")
+difstd
+```
+
+Las desviaciones correspondientes al estimador intragrupos son algo mayores.
+
+
+### Verificación y elección del modelo
+
+En primer lugar veamos si verdaderamente es razonable el uso de un modelo de componente de error unidireccional. Para ello, vamos a testear la presencia conjunta de efectos individuales en el panel de datos. <br>
+Este test está implementado en el paquete **plm** mediante la función `pFtest`.
+```{r}
+Guns.pooling1 <- plm(form , data = Guns, effect = "individual", model = "pooling")
+pFtest(Guns.within1, Guns.pooling1)
+```
+
+Rechazamos la hipóteis nula, luego podemos afirmar que existen efectos individuales en los datos.
+Por último, suponiendo que no existe endogeneidad en las variables, decidamos qué modelo escoger. <br>
+Para ello debemos contrastar la incorrelación de los efectos individuales con los regresores. Hagamos  entonces el test de Hausman. Como los resultados para los distintos metdodos de efectos aleatorios son muy similares, tomaremos por ejemplo el modelo dado por el método de Swarmy y Arora.
+```{r}
+phtest(Guns.within1, Guns.rswar1)
+```
+Se rechaza la hipotesis nula, por tanto hay correlacion de los efectos individuales y los regresores. En este caso, el estimador intragrupos es el unico que proporciona estimaciones consistentes.
+
+
+# Modelos de componente de errror bidireccional
+
+Pasamos ahora a la contrucción y ajuste de los modelos de componente de error bidireccional.
+
+## Modelo de efectos fijos
+
+La transformación establecida por la matriz $Q$ elimina las variables constantes para cada individuo, luego tomamos en principio para el modelo las variables consideradas finalmente para el modelo de componente de error unidireccional. Además $Q$ elimina aquellas variables que son constantes para los estados en cada instante de tiempo. Ya vimos en el análisis descriptivo que la variable `law` no tenía este comportamiento. Veamos los siguientes gráficos del comportamiento de las variables continuas en los distinos estados: 
+
+```{r}
+ggplot(Guns, aes(x = year, y = log(violent), group = state, color = factor(state))) +
+  geom_line() +
+  labs(title = "Evolución de la variable 'violent' en cada estado (1977-1999)",
+       x = "Año",
+       y = "Log(male)") +
+  theme_minimal() + theme(legend.position = "none",
+plot.title = element_text(hjust = 0.5))
+
+ggplot(Guns, aes(x = year, y = log(murder), group = state, color = factor(state))) +
+  geom_line() +
+  labs(title = "Evolución de la variable 'murder' en cada estado (1977-1999)",
+       x = "Año",
+       y = "Log(male)") +
+  theme_minimal() + theme(legend.position = "none",
+plot.title = element_text(hjust = 0.5))
+
+ggplot(Guns, aes(x = year, y = log(prisoners), group = state, color = factor(state))) +
+  geom_line() +
+  labs(title = "Evolución de la variable 'prisoners' en cada estado (1977-1999)",
+       x = "Año",
+       y = "Log(male)") +
+  theme_minimal() + theme(legend.position = "none",
+plot.title = element_text(hjust = 0.5))
+
+ggplot(Guns, aes(x = year, y = log(afam), group = state, color = factor(state))) +
+  geom_line() +
+  labs(title = "Evolución de la variable 'afam' en cada estado (1977-1999)",
+       x = "Año",
+       y = "Log(male)") +
+  theme_minimal() + theme(legend.position = "none",
+plot.title = element_text(hjust = 0.5))
+
+ggplot(Guns, aes(x = year, y = log(male), group = state, color = factor(state))) +
+  geom_line() +
+  labs(title = "Evolución de la variable 'male' en cada estado (1977-1999)",
+       x = "Año",
+       y = "Log(male)") +
+  theme_minimal() + theme(legend.position = "none")
+
+ggplot(Guns, aes(x = year, y = log(income), group = state, color = factor(state))) +
+  geom_line() +
+  labs(title = "Evolución de la variable 'income' en cada estado (1977-1999)",
+       x = "Año",
+       y = "Log(male)") +
+  theme_minimal() + theme(legend.position = "none",
+plot.title = element_text(hjust = 0.5))
+```
+
+
+Observamos que el comportamiento de `male` en cada instante de tiempo es prácticamente constante en los distintos estados. Vamos a eliminar esta variable del modelo para así tener estimaciones más favorables.
+
+```{r , results = 'hide'}
+Guns.within2 <- plm(log(violent) ~ log(murder) +  log(prisoners) + log(afam) + 
+                    + log(income) + law, data = Guns , 
+                    effect = "twoways" , model = "within")
+summary(Guns.within2)
+```
+
+
+Para la estimación de los efectos temporales, contamos con las mismas opciones descritas para la componente individual. Destacamos la más usual: 
+```{r}
+fixef(Guns.within2 , effect = "time" , type = "level")
+```
+
+que estima los interceptos temporales, es decir, $\hat{\alpha} + \hat{\mu}_t, \text{  } t \in \{1, \dots , T\}$.
+
+Estableciendo  `effect`= `twoways` se obtienen los interceptos en cada individuo e instante de tiempo, es decir, $\hat{\alpha} + \eta_n + \mu_t$ con $n \in \{1,\dots,N\}, \text{ }t \in \{1,\dots, T\}$. 
+
+```{r , results='hide'}
+fixef(Guns.within2 , effect = "twoways" , type = "level")
+```
+
+Las pendientes de las covariables son las siguientes:
+
+```{r}
+coef(Guns.within2)
+```
+
+## Modelos de efectos aleatorios
+
+Los resultados que se obtienen en un modelo de efectos aleatorios van a depender del método escogido para la estimación de los parámetros desconocidos correspondientes a la transformación realizada sobre el modelo original. 
+
+```{r}
+Guns.rwalhus2 <- plm(form , data = Guns , effect = "twoways" , 
+                       model = "random", random.method = "walhus")
+Guns.ramemiya2 <- update(Guns.rwalhus2 , random.method = "amemiya")
+Guns.rswar2 <- update(Guns.rwalhus2 , random.method = "swar")
+Guns.rnerlove2 <- update(Guns.rwalhus2 , random.method = "nerlove")
+Guns.rmodels2 <- list( walhus = Guns.rwalhus2 ,  amemiya = Guns.ramemiya2, 
+                      swar = Guns.rswar2 , nerlove = Guns.rnerlove2)
+```
+
+Veamos los parámetros $\theta$.
+
+```{r}
+sapply(Guns.rmodels2, function(x) ercomp(x)$theta)
+```
+Los parámetros $\theta_{\eta}$ para todos los modelos son bastante elevados, principalmente en los casos de `Guns.ramemiya2` y `Guns.rnerlove2` que son prácticamente $1$. Como sucede en el caso unidireccional, la componente individual de la varianza es sobreestimada si se emplea alguno de estos métodos, pues tenemos presente en el modelo variables prácticamente constantes en el tiempo para los distintos estados (`population` y `density`). Además, para estos dos casos el prámetro $\theta_{\mu}$ toma también un valor cercano a $1$, lo cual va a suponer que la componente temporal del error sea también sobreestimada, ya que la transformación va a eliminar casi completamente las variables constantes en cada instante de tiempo para los distintos estados (`male`). Para los modelos `Guns.rswar` y `Guns.rwalhus` el parámetro $\theta_{\eta}$ toma también un valor muy alto, siendo además en el modelo de Wallace y Hussain el parámetro $\theta_{\mu}$ un valor considerable. Analizaremos luego si para estos modelos debemos eliminar alguna variable.
+
+```{r}
+sapply(Guns.rmodels2, function(x) ercomp(x)$sigma2)
+```
+Vemos la sobreestimación clara de la componente individual y también aunque bastante más leve de la componente temporal en los modelos de Amemiya y Nerlove.
+Reescribimos por tanto estos modelos eliminando las variables ya mencionadas.
+
+```{r}
+Guns.ramemiya2 <- plm(log(violent) ~ log(murder) +  log(prisoners) + log(afam) + 
+                     + log(income) + law, data = Guns , 
+                    effect = "twoways" , model = "random" , 
+                    random.method = "amemiya")
+Guns.rnerlove2 <-  plm(log(violent) ~ log(murder) +  log(prisoners) + log(afam) + 
+                       + log(income) + law, data = Guns , 
+                    effect = "twoways" , model = "random" , 
+                    random.method = "nerlove")
+Guns.rmodels2 <- list( walhus = Guns.rwalhus2 ,  amemiya = Guns.ramemiya2, 
+                      swar = Guns.rswar2 , nerlove = Guns.rnerlove2)
+
+sapply(Guns.rmodels2, function(x) ercomp(x)$theta)
+sapply(Guns.rmodels2, function(x) ercomp(x)$sigma2)
+```
+Los valores de los parámetros $\theta$ han experimentado unos cambios mínimos, mientras que las estimaciones de las componentes de la varianza sí se han reducido considerablemente.
+
+Los coeficientes para los distintos modelos son:
+
+```{r}
+sapply(Guns.rmodels2 , function(m) coef(summary(m))[ , "Estimate"])
+```
+
+## Comparación de los modelos de componente de error bidireccional
+
+Para los modelos de Amemiya y Nerlove, todos los parámetros $\theta$ son muy cercanos a uno, luego los coeficientes de efectos aleatorios estimados mediante esos métodos van a ser muy similares al de efectos fijos. Para el resto sí notaremos algunas variaciones respecto del modelo de efectos fijos, aunque no van a ser muy significativas si las variables con las que contamos en el modelo son adecuadas.
+
+```{r}
+cbind(as.matrix(sapply(list(amemiya = Guns.ramemiya2 , nerlove = Guns.ramemiya2), function(m) coef(m)))[-1,], within = coef(Guns.within2))
+```
+```{r}
+cbind(as.matrix(sapply(Guns.rmodels2[c("walhus" , "swar")], function(m) coef(m)))[-1,])
+```
+El coeficiente de la variable `male`para el método de Wallace and Hussain es positivo y considerablemente alto, lo cual no es razonable atendiendo al coeficiente obtenido por el modelo de Swarmy y los coeficientes obtenidos en los modelos anteriores para esa variable. Esto es debido al valor de $\theta_{\mu}$ del modelo, luego eliminamos esa variable.
+
+```{r}
+Guns.rwalhus2 <- plm(log(violent) ~ log(murder) +  log(prisoners) + log(afam) + 
+                     log(population) + log(income)+ log(density) + law, 
+                     data = Guns , effect = "twoways" , model = "random" , 
+                     random.method = "walhus")
+```
+
+
+
+
+## Verificación y eleccion del modelo
+
+Veamos si realmente es oportuno el empleo de un modelo de componente de error bidireccional. Debemos verificar si existen efectos temporales e individuales. 
+
+```{r}
+Guns.pooling2 <- plm(form , data = Guns, effect = "twoways", model = "pooling")
+pFtest(Guns.within2, Guns.pooling2)
+```
+
+Se rechaza la hipótesis nula y por tanto existen efectos individuales y temporales.
+Por último, debemos determinar si seleccionar un modelo de efectos fijos o aleatorios. 
+Tomamos el modelo de Swarmy como representante de efectos aleatorios y realizamos el test de Hausman
+
+```{r}
+phtest(Guns.within2,Guns.rswar2)
+```
+Seleccionamos por tanto el modelo de efectos fijos.
+
+ 
+# Comparación de los modelos escogidos e interpretación de los resultados
+
+Los modelos que hemos seleccionado finalmente son los de efectos fijos para ambos tipos de descomposiciones del error. Para ello nos hemos basado en el test de Hausman en ambas ocasiones, aunque esta elección también coincide basándonos en la naturaleza de los datos. El conjunto de unidades del panel son estados de EEUU, luego esas unidades son fijadas de antemano y no son seleccionadas aleatoriamente de una población mayor. En esos casos ya hemos mencionado que es más conveniente en principio un modelo de efectos fijos.
+Recordemos las variables y los coeficientes de los modelos.
+
+```{r}
+coef(Guns.within2 , type = "level")
+coef(Guns.within1 , type = "level")
+```
+En el modelo bidireccional contamos con las mismas variables que en el caso unidireccional, exceptuando la variable `male` pues recordemos que fue eliminada debido a la transformación dada por la matriz $Q$. Sin embargo no debemos pensar que esto supone una pérdida de información con respecto al modelo unidireccional, pues el efecto de esta variable estaría recogido por la componente temporal del error, así como las variables que puedan haber sido omitidas en el estudio que cuenten también con un comportamiento constante para los estados en cada unidad de tiempo. Comparemos los ajustes de ambos modelos mediante la suma de los valores absolutos de los errores.
+
+```{r}
+err <- rbind( uni = sum(abs(exp(predict(Guns.within1)) - Guns$violent)), 
+              bi = sum(abs(exp(predict(Guns.within2)) - Guns$violent)))
+colnames(err) = "sum.errabs"
+err
+```
+El modelo de componente de error bidireccional se ajusta en general mejor a los datos, aunque podemos localizar estados para los cuales se obtienen mejores resultados para el modelo de componente de error unidireccional. <br>
+Pese a que hemos dicho que la variable `male` es constante para los distintos individuos del panel, el estado de Alaska se diferencia algo del resto con un mayor ratio de hombres en general. Recordemos la gráfica mostrada anteriormente, en la cual Alaska viene representada por la curva que tiene mayor ordenada de todas en todos los instantes de tiempo.
+
+```{r}
+ggplot(Guns, aes(x = year, y = log(male), group = state, color = factor(state))) +
+  geom_line() +
+  labs(title = "Evolución de la variable 'male' en cada estado (1977-1999)",
+       x = "Año",
+       y = "Log(male)") +
+  theme_minimal() + theme(legend.position = "none")
+```
+
+Analicemos las diferencias de los valores ajustados para ambos modelos.
+
+```{r}
+time <- seq(1977, 1999)
+vector_alaska <- paste("Alaska", time, sep="-")
+
+errAlaska <- rbind(uni = sum(abs(exp(predict(Guns.within1)[vector_alaska]) -
+                                   Guns[Guns$state=="Alaska",3])),
+                   bi = sum(abs(exp(predict(Guns.within2)[vector_alaska]) - 
+                                  Guns[Guns$state=="Alaska",3])))
+colnames(errAlaska) <- "sum.error"
+errAlaska
+
+```
+
+Vemos como la medida del error en el estado de Alaska es menor para el modelo unidireccional. Esto es debido a que el ratio de hombres en Alaska es considerablemente distinto al resto de estados en el instante inicial y en el instante final (tiempos en los que los valores ajustados van a tener un error significativamente menor para el modelo unidireccional) y en el resto de las unidades de tiempo toma valores cada vez más cercanos al resto de estados. <br>
+Errores en el ajuste para los instantes iniciales y finales de Alaska:
+```{r}
+errAlaskainit<-rbind(uni = abs(exp(predict(Guns.within1)[vector_alaska[1]]) -
+                                 Guns[Guns$state=="Alaska",3][1]), 
+                     bi = abs(exp(predict(Guns.within2)[vector_alaska[1]]) - 
+                                Guns[Guns$state=="Alaska",3][1]))
+
+n = length(vector_alaska)
+errAlaskaend <- rbind(uni = abs(exp(predict(Guns.within1)[vector_alaska[n]]) - 
+                                  Guns[Guns$state=="Alaska",3][n]), 
+                      bi = abs(exp(predict(Guns.within2)[vector_alaska[n]]) -
+                                 Guns[Guns$state=="Alaska",3][n]))
+
+errAlaska <- cbind(errAlaskainit , errAlaskaend)
+colnames(errAlaska) <- c("sum.error.in" , "sum.error.end")
+errAlaska
+
+```
+
+Sin embargo, en la modelización de los datos panel nos interesa la extracción de conclusiones globales para el conjunto de individuos. Por tanto seleccionaremos finalmente el modelo de efectos fijos de componente de error bidireccional `Guns.within2`. <br>
+Los coeficientes del modelo son:
+
+```{r}
+coef(Guns.within2)
+```
+Atendiendo a los coeficientes del modelo podemos extraer las siguientes conclusiones:
+
+- `murder`: un aumento de un $1\%$ en esta variable supone según el modelo un incremento de un $0.17\%$ aproximadamente de la variable objetivo. Es decir, un aumento en la tasa de asesinatos causa un aumento de la tasa de delitos violentos.
+
+- `prisoners`: un aumento de un $1\%$ en esta variable supone un descenso de un $0.09\%$ aproximadamente de `violent`. Por tanto, un aumento en la tasa de encarcelamientos provocaría (aunque no notablemente) un descenso de la tasa de delitos violentos en el año posterior.
+
+- `afam`: un aumento de un $1\%$ de esta variable supone un descenso de un $0.38\%$ aproximadamente de `violent`. Luego según el modelo un aumento de la población afroamericana un considerable descenso en la tasa de crímenes violentos. Este es un porcentaje muy alto, pero debemos tener en cuenta que es fiable en el contexto y periodo de estudio, pudiendo haber factores subyacentes que favorecen la reducción de la violencia en zonas con una mayor proporción de población afroamericana.
+
+- `income`: un aumento de un $1\%$ en esta variable supondría un aumento de un $0.21\%$ aproximadamente en la variable objetivo. Es decir, las zonas con mayor ingreso tienen una mayor tasa de delitos violentos. Es razonable dado que EEUU es un país con una importante desigualdad económica, estableciéndose en los alrededores de las zonas más ricas suburbios donde la tasa de crímenes violentos es alta.
+
+- `law`: según los resultados del modelo interpretamos que el gozar de una ley vigente sobre portabilidad de armas disminuye, aunque no excesivamente (un $0.01\%$ aproximadamente) la tasa de delitos violentos. Este dato es argumento a favor de los que apoyan el control de las armas en EEUU, aunque sin embargo no es del todo convincente pues el valor del coeficiente es muy cercano a 0, luego deberíamos hacer un estudio más profundo para ese debate. 
+
+
+
+
+
+
+
+
+
+
